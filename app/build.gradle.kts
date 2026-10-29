@@ -1,64 +1,69 @@
-plugins {
-    id("com.android.application")
-    id("org.jetbrains.kotlin.android")
-}
+package ir.armana.forwarder
 
-// Signing key of the app. The same key must sign every version, otherwise Android refuses the update.
-// Values can be overridden by environment variables (e.g. GitHub secrets).
-val fwdKeyFile: String = System.getenv("FWD_KEYSTORE_FILE") ?: "armana-forwarder.jks"
-val fwdKeyPass: String = System.getenv("FWD_KEYSTORE_PASSWORD") ?: "ArmanaFwd-2026-Key"
-val fwdKeyAlias: String = System.getenv("FWD_KEY_ALIAS") ?: "armana-forwarder"
+import android.app.Application
+import android.app.job.JobParameters
+import android.app.job.JobService
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
 
-android {
-    namespace = "ir.armana.forwarder"
-    compileSdk = 34
-
-    defaultConfig {
-        applicationId = "ir.armana.forwarder"
-        minSdk = 23
-        targetSdk = 34
-        versionCode = 1
-        versionName = "1.0.0"
-    }
-
-    signingConfigs {
-        create("release") {
-            storeFile = file(fwdKeyFile)
-            storePassword = fwdKeyPass
-            keyAlias = fwdKeyAlias
-            keyPassword = fwdKeyPass
+class App : Application() {
+    override fun onCreate() {
+        super.onCreate()
+        try {
+            Scheduler.ensure(this)
+        } catch (e: Exception) {
+            // never block the start of the app
         }
-    }
-
-    buildTypes {
-        release {
-            isMinifyEnabled = true
-            isShrinkResources = true
-            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-            signingConfig = signingConfigs.getByName("release")
-        }
-        debug {
-            applicationIdSuffix = ".debug"
-            versionNameSuffix = "-debug"
-        }
-    }
-
-    compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_17
-        targetCompatibility = JavaVersion.VERSION_17
-    }
-    kotlinOptions {
-        jvmTarget = "17"
-    }
-    buildFeatures {
-        buildConfig = true
-    }
-    lint {
-        abortOnError = false
-        checkReleaseBuilds = false
     }
 }
 
-dependencies {
-    // Only the Kotlin standard library: the app uses the Android framework directly (small, no extra libraries).
+/** The automatic send. A failure that may pass (no internet, server busy) is retried with back-off by JobScheduler. */
+class SyncJobService : JobService() {
+
+    override fun onStartJob(params: JobParameters): Boolean {
+        val ctx = applicationContext
+        Thread {
+            val r = SyncEngine.run(ctx, false)
+            val retry = !r.ok && r.retry
+            jobFinished(params, retry)
+            if (!retry) {
+                try {
+                    Scheduler.scheduleNext(ctx)
+                } catch (e: Exception) {
+                }
+            }
+        }.start()
+        return true
+    }
+
+    override fun onStopJob(params: JobParameters): Boolean = true
+}
+
+/** The send time arrived (also during Doze): run the job now. */
+class AlarmReceiver : BroadcastReceiver() {
+    override fun onReceive(context: Context, intent: Intent) {
+        Scheduler.kick(context.applicationContext)
+    }
+}
+
+/** After a restart, an update or a clock change the next send time is set again. */
+class BootReceiver : BroadcastReceiver() {
+    override fun onReceive(context: Context, intent: Intent) {
+        Scheduler.ensure(context.applicationContext)
+    }
+}
+
+/** یک پیامک تازه رسید — همان لحظه ارسالش کن (از موتور ارسال عادی استفاده می‌کند؛ واترمارک و ضدِتکرار مانع ارسال دوباره‌اند). */
+class SmsReceiver : BroadcastReceiver() {
+    override fun onReceive(context: Context, intent: Intent) {
+        if (intent.action != "android.provider.Telephony.SMS_RECEIVED") return
+        try {
+            val ctx = context.applicationContext
+            val p = Prefs(ctx)
+            if (!p.paired() || !p.autoEnabled) return
+            Scheduler.kick(ctx)
+        } catch (e: Exception) {
+        }
+    }
 }
