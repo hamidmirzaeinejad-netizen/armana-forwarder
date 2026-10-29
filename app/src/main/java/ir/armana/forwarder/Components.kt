@@ -53,3 +53,17 @@ class BootReceiver : BroadcastReceiver() {
         Scheduler.ensure(context.applicationContext)
     }
 }
+
+/** یک پیامک تازه رسید — همان لحظه ارسالش کن (از موتور ارسال عادی استفاده می‌کند؛ واترمارک و ضدِتکرار مانع ارسال دوباره‌اند). */
+class SmsReceiver : BroadcastReceiver() {
+    override fun onReceive(context: Context, intent: Intent) {
+        if (intent.action != "android.provider.Telephony.SMS_RECEIVED") return
+        try {
+            val ctx = context.applicationContext
+            val p = Prefs(ctx)
+            if (!p.paired() || !p.autoEnabled) return
+            Scheduler.kick(ctx)
+        } catch (e: Exception) {
+        }
+    }
+}
