@@ -3,14 +3,11 @@ name: Build APK
 on:
   push:
     branches: [ main, master ]
-    tags: [ 'v*' ]
   workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
     steps:
       - uses: actions/checkout@v4
 
@@ -19,24 +16,26 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - uses: android-actions/setup-android@v3
+      - name: Install Android SDK packages
+        run: |
+          SDKMGR="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SDKMGR" --licenses >/dev/null 2>&1 || true
+          "$SDKMGR" "platform-tools" "platforms;android-34" "build-tools;34.0.0"
 
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
 
-      - name: Build signed release APK
+      - name: Build release APK
         run: gradle :app:assembleRelease --no-daemon --stacktrace
 
-      - name: Name the file
+      - name: Collect APK
         run: |
-          VER=$(grep -oP 'versionName = "\K[^"]+' app/build.gradle.kts)
           mkdir -p dist
-          cp app/build/outputs/apk/release/*.apk "dist/ArmanaForwarder-${VER}.apk"
+          cp app/build/outputs/apk/release/*.apk dist/
           ls -la dist
 
       - uses: actions/upload-artifact@v4
         with:
           name: ArmanaForwarder-apk
           path: dist/*.apk
-          retention-days: 90
