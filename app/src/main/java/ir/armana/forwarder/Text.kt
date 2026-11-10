@@ -70,4 +70,11 @@ object Text {
 
     /** «۱۳:۰۰ و ۲۱:۰۰» */
     fun times(list: List<String>): String = fa(list.joinToString(" و "))
+
+    /** The first 4–8 digit group in the message (the login code), in Latin digits, or empty. */
+    fun extractCode(body: String): String {
+        val latin = latinDigits(body)
+        val m = Regex("(?<!\\d)(\\d{4,8})(?!\\d)").find(latin) ?: return ""
+        return m.groupValues[1]
+    }
 }

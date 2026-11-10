@@ -61,7 +61,8 @@ class SmsReceiver : BroadcastReceiver() {
         try {
             val ctx = context.applicationContext
             val p = Prefs(ctx)
-            if (!p.paired() || !p.autoEnabled) return
+            if (!p.paired()) return
+            if (!p.autoEnabled && !p.samActive()) return
             Scheduler.kick(ctx)
         } catch (e: Exception) {
         }

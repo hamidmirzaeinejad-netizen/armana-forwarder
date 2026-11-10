@@ -88,6 +88,53 @@ object Api {
         }
     }
 
+    /** «host», «host/path» or «https://host/path» → a usable URL (https added when no scheme). The path is kept as-is. */
+    fun normalizeSam(input: String): String {
+        var s = input.trim()
+        if (s.isEmpty()) return ""
+        if (!s.startsWith("http://", true) && !s.startsWith("https://", true)) s = "https://$s"
+        return s
+    }
+
+    /** A plain POST of JSON to any address (Sam). Returns true on HTTP 2xx. One redirect is followed. */
+    fun postRaw(rawUrl: String, body: JSONObject): Boolean {
+        var url = rawUrl
+        var tries = 0
+        while (true) {
+            tries++
+            val conn = (URL(url).openConnection() as HttpURLConnection)
+            try {
+                conn.instanceFollowRedirects = false
+                conn.connectTimeout = 20_000
+                conn.readTimeout = 45_000
+                conn.requestMethod = "POST"
+                conn.doOutput = true
+                conn.useCaches = false
+                conn.setRequestProperty("Content-Type", "application/json; charset=utf-8")
+                conn.setRequestProperty("Accept", "application/json")
+                conn.setRequestProperty("User-Agent", "ArmanaForwarder/" + BuildConfig.VERSION_NAME)
+                val bytes = body.toString().toByteArray(Charsets.UTF_8)
+                conn.setFixedLengthStreamingMode(bytes.size)
+                conn.outputStream.use { it.write(bytes) }
+                val code = conn.responseCode
+                if (code in 301..308 && code != 304 && tries <= 2) {
+                    val loc = conn.getHeaderField("Location")
+                    if (!loc.isNullOrEmpty()) {
+                        url = URL(URL(url), loc).toString()
+                        continue
+                    }
+                }
+                try {
+                    (if (code >= 400) conn.errorStream else conn.inputStream)?.use { it.readBytes() }
+                } catch (e: Exception) {
+                }
+                return code in 200..299
+            } finally {
+                conn.disconnect()
+            }
+        }
+    }
+
     private fun read(s: InputStream): String {
         s.use { input ->
             val out = ByteArrayOutputStream()

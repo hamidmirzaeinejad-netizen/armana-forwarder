@@ -34,6 +34,48 @@ class Prefs(ctx: Context) {
         get() = (p.getString("schedule", "13:00,21:00") ?: "").split(",").map { it.trim() }.filter { it.matches(Regex("^\\d{2}:\\d{2}$")) }
         set(v) { p.edit().putString("schedule", v.joinToString(",")).commit() }
 
+    /** My own «HH:mm» send times, used instead of Armana's when useCustomSchedule is on. */
+    var customSchedule: List<String>
+        get() = (p.getString("custom_schedule", "") ?: "").split(",").map { it.trim() }.filter { it.matches(Regex("^\\d{2}:\\d{2}$")) }
+        set(v) { p.edit().putString("custom_schedule", v.joinToString(",")).commit() }
+
+    var useCustomSchedule: Boolean
+        get() = p.getBoolean("use_custom_schedule", false)
+        set(v) { p.edit().putBoolean("use_custom_schedule", v).commit() }
+
+    /** The times actually used for the automatic send: mine when chosen and non-empty, otherwise Armana's. */
+    fun effectiveSchedule(): List<String> {
+        val c = customSchedule
+        return if (useCustomSchedule && c.isNotEmpty()) c else schedule
+    }
+
+    /* ------------------------------------------------------------------ Sam (login-code messages) */
+
+    var samEnabled: Boolean
+        get() = p.getBoolean("sam_enabled", false)
+        set(v) { p.edit().putBoolean("sam_enabled", v).commit() }
+
+    /** The address (URL) the login-code messages are posted to. */
+    var samUrl: String
+        get() = p.getString("sam_url", "") ?: ""
+        set(v) { p.edit().putString("sam_url", v).commit() }
+
+    /** Senders whose messages (login codes) are sent to Sam. */
+    var samSenders: Set<String>
+        get() = HashSet(p.getStringSet("sam_senders", emptySet()) ?: emptySet())
+        set(v) { p.edit().putStringSet("sam_senders", HashSet(v)).commit() }
+
+    /** Messages older than this are never sent to Sam (set when Sam is first turned on). */
+    var samSince: Long
+        get() = p.getLong("sam_since", 0L)
+        set(v) { p.edit().putLong("sam_since", v).commit() }
+
+    var samSent: Long
+        get() = p.getLong("sam_total", 0L)
+        set(v) { p.edit().putLong("sam_total", v).apply() }
+
+    fun samActive(): Boolean = samEnabled && samUrl.isNotEmpty() && samSenders.isNotEmpty()
+
     /** Senders whose SMS are forwarded (normalized addresses). Nothing else ever leaves the phone. */
     var senders: Set<String>
         get() = HashSet(p.getStringSet("senders", emptySet()) ?: emptySet())

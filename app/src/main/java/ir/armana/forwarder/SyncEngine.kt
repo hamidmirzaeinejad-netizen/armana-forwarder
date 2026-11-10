@@ -58,40 +58,54 @@ object SyncEngine {
         if (!prefs.paired()) return Result(false, 0, "گوشی به آرمانا متصل نیست.", false)
         val canRead = SmsReader.canRead(ctx)
         val senders = prefs.senders
+        val samSenders = if (prefs.samActive()) prefs.samSenders else emptySet()
         val store = SentStore(ctx)
         var sent = 0
+        var samNow = 0
         var batches = 0
         var lastReply: JSONObject? = null
 
-        if (canRead && senders.isNotEmpty()) {
+        if (canRead && (senders.isNotEmpty() || samSenders.isNotEmpty())) {
             val since = maxOf(prefs.since, prefs.watermark - OVERLAP_MS)
-            val scanned = SmsReader.since(ctx, since, 3000) // every sender, oldest first
-            val all = scanned.filter { senders.contains(it.address) }
-            val known = store.known(all.map { it.key })
-            val todo = all.filter { !known.contains(it.key) }
-            val size = prefs.maxBatch.coerceIn(10, 200)
-            var complete = true
-            for (part in todo.chunked(size)) {
-                val reply = call(ctx, prefs, part, senders)
-                lastReply = reply
-                batches++
-                val accepted = HashSet<String>()
-                val arr = reply.optJSONArray("accepted") ?: JSONArray()
-                for (i in 0 until arr.length()) accepted.add(arr.optString(i))
-                store.add(accepted)
-                sent += reply.optInt("stored", 0)
-                // the watermark never passes an SMS that was not acknowledged
-                val firstMissing = part.firstOrNull { !accepted.contains(it.key) }
-                if (firstMissing != null) {
-                    prefs.watermark = maxOf(prefs.watermark, firstMissing.date - 1)
-                    complete = false
-                    break
+            // when only Sam is in use, look back a little from the Sam watermark instead
+            val scanFrom = if (senders.isNotEmpty()) since else maxOf(0L, prefs.samSince - OVERLAP_MS)
+            val scanned = SmsReader.since(ctx, scanFrom, 3000) // every sender, oldest first
+
+            // ---------------- Armana (bank SMS) ----------------
+            if (senders.isNotEmpty()) {
+                val all = scanned.filter { senders.contains(it.address) }
+                val known = store.known(all.map { it.key })
+                val todo = all.filter { !known.contains(it.key) }
+                val size = prefs.maxBatch.coerceIn(10, 200)
+                var complete = true
+                for (part in todo.chunked(size)) {
+                    val reply = call(ctx, prefs, part, senders)
+                    lastReply = reply
+                    batches++
+                    val accepted = HashSet<String>()
+                    val arr = reply.optJSONArray("accepted") ?: JSONArray()
+                    for (i in 0 until arr.length()) accepted.add(arr.optString(i))
+                    store.add(accepted)
+                    sent += reply.optInt("stored", 0)
+                    // the watermark never passes an SMS that was not acknowledged
+                    val firstMissing = part.firstOrNull { !accepted.contains(it.key) }
+                    if (firstMissing != null) {
+                        prefs.watermark = maxOf(prefs.watermark, firstMissing.date - 1)
+                        complete = false
+                        break
+                    }
+                    prefs.watermark = maxOf(prefs.watermark, part.last().date)
                 }
-                prefs.watermark = maxOf(prefs.watermark, part.last().date)
+                // everything read so far is done: the next run starts after it (also past other senders' SMS)
+                if (complete && scanned.isNotEmpty()) {
+                    prefs.watermark = maxOf(prefs.watermark, scanned.last().date)
+                }
             }
-            // everything read so far is done: the next run starts after it (also past other senders' SMS)
-            if (complete && scanned.isNotEmpty()) {
-                prefs.watermark = maxOf(prefs.watermark, scanned.last().date)
+
+            // ---------------- Sam (login codes) ----------------
+            if (samSenders.isNotEmpty()) {
+                val codes = scanned.filter { samSenders.contains(it.address) && it.date > prefs.samSince }
+                samNow = sendToSam(ctx, prefs, store, codes)
             }
         }
         if (batches == 0) {
@@ -99,11 +113,53 @@ object SyncEngine {
         }
         lastReply?.let { applyConfig(ctx, prefs, it) }
         prefs.totalSent = prefs.totalSent + sent
+
         if (Math.random() < 0.1) store.purge(System.currentTimeMillis() - 150 * 86_400_000L)
 
         if (!canRead) return Result(false, 0, "اجازهٔ خواندن پیامک داده نشده است؛ فقط وضعیت گوشی فرستاده شد.", false)
-        if (senders.isEmpty()) return Result(true, 0, "هیچ فرستنده‌ای برای ارسال انتخاب نشده است.", false)
-        return Result(true, sent, if (sent > 0) "${Text.fa(sent)} پیامک تازه فرستاده شد." else "پیامک تازه‌ای نبود.", false)
+        if (senders.isEmpty() && samSenders.isEmpty()) return Result(true, 0, "هیچ فرستنده‌ای برای ارسال انتخاب نشده است.", false)
+        val msg = buildString {
+            if (sent > 0) append("${Text.fa(sent)} پیامک به آرمانا فرستاده شد. ")
+            if (samNow > 0) append("${Text.fa(samNow)} کد به سام فرستاده شد. ")
+            if (sent == 0 && samNow == 0) append("پیامک تازه‌ای نبود.")
+        }.trim()
+        return Result(true, sent, msg, false)
+    }
+
+    /**
+     * Posts the login-code messages to Sam (the user's own URL). Each key is stored with a «sam:» prefix, separate from
+     * Armana's keys, so a code is never sent twice. Stops on the first failure so it is retried next run. Returns how many
+     * were sent now.
+     */
+    private fun sendToSam(ctx: Context, prefs: Prefs, store: SentStore, msgs: List<Sms>): Int {
+        if (msgs.isEmpty() || prefs.samUrl.isEmpty()) return 0
+        val known = store.known(msgs.map { "sam:" + it.key })
+        val todo = msgs.filter { !known.contains("sam:" + it.key) }
+        if (todo.isEmpty()) return 0
+        val done = HashSet<String>()
+        for (m in todo) {
+            val o = JSONObject()
+            o.put("address", m.address)
+            o.put("body", m.body)
+            o.put("date", m.date)
+            o.put("sim", m.sim)
+            o.put("code", Text.extractCode(m.body))
+            val payload = JSONObject()
+            payload.put("device", Build.MANUFACTURER + " " + Build.MODEL)
+            payload.put("app_version", BuildConfig.VERSION_NAME)
+            payload.put("message", o)
+            val ok = try {
+                Api.postRaw(prefs.samUrl, payload)
+            } catch (e: Exception) {
+                false
+            }
+            if (ok) done.add("sam:" + m.key) else break
+        }
+        if (done.isNotEmpty()) {
+            store.add(done)
+            prefs.samSent = prefs.samSent + done.size
+        }
+        return done.size
     }
 
     private fun call(ctx: Context, prefs: Prefs, part: List<Sms>, senders: Set<String>): JSONObject {

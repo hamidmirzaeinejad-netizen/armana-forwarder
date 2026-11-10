@@ -56,7 +56,7 @@ object Scheduler {
             cancel(ctx)
             return
         }
-        val at = nextSlot(p.schedule)
+        val at = nextSlot(p.effectiveSchedule())
         if (!hasJob(ctx)) schedule(ctx, maxOf(0L, at - System.currentTimeMillis()))
         setAlarm(ctx, at)
     }
@@ -68,7 +68,7 @@ object Scheduler {
             cancel(ctx)
             return
         }
-        val at = nextSlot(p.schedule)
+        val at = nextSlot(p.effectiveSchedule())
         schedule(ctx, maxOf(0L, at - System.currentTimeMillis()))
         setAlarm(ctx, at)
     }

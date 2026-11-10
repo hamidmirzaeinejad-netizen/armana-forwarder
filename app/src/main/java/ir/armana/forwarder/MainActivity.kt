@@ -31,7 +31,7 @@ import org.json.JSONObject
  */
 class MainActivity : Activity() {
 
-    private enum class Screen { PAIR, HOME, SENDERS, LOG }
+    private enum class Screen { PAIR, HOME, SENDERS, LOG, SCHEDULE, SAM }
 
     private lateinit var ui: Ui
     private lateinit var prefs: Prefs
@@ -71,7 +71,7 @@ class MainActivity : Activity() {
 
     @Deprecated("Deprecated in Java")
     override fun onBackPressed() {
-        if (screen == Screen.SENDERS || screen == Screen.LOG) {
+        if (screen == Screen.SENDERS || screen == Screen.LOG || screen == Screen.SCHEDULE || screen == Screen.SAM) {
             if (prefs.paired()) showHome() else showPair()
             return
         }
@@ -423,6 +423,146 @@ class MainActivity : Activity() {
         }, ui.lp())
     }
 
+    /* ================================================================== custom send times */
+
+    private fun showSchedule() {
+        screen = Screen.SCHEDULE
+        val body = page("زمان‌های ارسال خودکار", "زمان‌های دلخواه خودت را تعیین کن", true)
+        val times = prefs.customSchedule.toMutableList()
+
+        val info = ui.card(Ui.WARN_BG, 0)
+        info.addView(ui.text("وقتی «استفاده از زمان‌های دلخواه من» روشن باشد، ارسال خودکار فقط در ساعت‌هایی که این‌جا تعیین می‌کنی انجام می‌شود (به‌جای زمان‌های آرمانا). ارسال آنیِ پیامک‌ها مستقل از این است و همیشه کار می‌کند.", 13f, Ui.WARN))
+        body.addView(info, ui.lp(bottom = 12))
+
+        val toggleCard = ui.card()
+        val tr = ui.row()
+        val tcol = ui.column()
+        tcol.addView(ui.text("استفاده از زمان‌های دلخواه من", 15f, Ui.INK, true))
+        tcol.addView(ui.text("خاموش = پیروی از زمان‌های آرمانا", 12f, Ui.MUTED))
+        tr.addView(tcol, ui.weight(1f))
+        val sw = Switch(this)
+        sw.isChecked = prefs.useCustomSchedule
+        tr.addView(sw)
+        toggleCard.addView(tr)
+        body.addView(toggleCard, ui.lp(bottom = 12))
+
+        val listCard = ui.card()
+        listCard.addView(ui.text("زمان‌ها", 15f, Ui.INK, true))
+        val listHolder = ui.column()
+        listCard.addView(listHolder)
+        body.addView(listCard, ui.lp(bottom = 12))
+
+        fun redraw() {
+            listHolder.removeAllViews()
+            if (times.isEmpty()) {
+                listHolder.addView(ui.text("هنوز زمانی اضافه نشده. اگر خالی بماند، از زمان‌های آرمانا استفاده می‌شود.", 13f, Ui.MUTED), ui.lp(top = 6))
+            }
+            for (t in times.sorted()) {
+                val r = ui.row()
+                r.setPadding(0, ui.dp(10), 0, ui.dp(10))
+                r.addView(ui.ltr(ui.text(Text.fa(t), 16f, Ui.INK, true)), ui.weight(1f))
+                val del = ui.text("حذف", 14f, Ui.BAD, true)
+                del.setPadding(ui.dp(8), ui.dp(4), ui.dp(8), ui.dp(4))
+                del.setOnClickListener { times.remove(t); redraw() }
+                r.addView(del)
+                listHolder.addView(r)
+            }
+        }
+        redraw()
+
+        body.addView(ui.secondary("افزودن زمان") {
+            val now = java.util.Calendar.getInstance()
+            android.app.TimePickerDialog(this, { _, h, m ->
+                val t = String.format(java.util.Locale.US, "%02d:%02d", h, m)
+                if (!times.contains(t)) { times.add(t); redraw() }
+            }, now.get(java.util.Calendar.HOUR_OF_DAY), now.get(java.util.Calendar.MINUTE), true).show()
+        }, ui.lp(bottom = 12))
+
+        body.addView(ui.primary("ذخیره") {
+            prefs.customSchedule = times
+            prefs.useCustomSchedule = sw.isChecked
+            try { Scheduler.scheduleNext(this) } catch (e: Exception) {}
+            showHome()
+        }, ui.lp())
+    }
+
+    /* ================================================================== Sam (login codes) */
+
+    private fun showSam() {
+        screen = Screen.SAM
+        val body = page("ارسال کد ورود به سام", "پیامک فرستنده‌های انتخابی به آدرس تو فرستاده می‌شود", true)
+
+        val info = ui.card(Ui.WARN_BG, 0)
+        info.addView(ui.text("پیامکِ فرستنده‌هایی که این‌جا تیک بزنی، همان لحظهٔ رسیدن به آدرس سام فرستاده می‌شود. کد ورود یک کلید حساس است؛ آدرس را حتماً با https بگذار و دسترسی به آن سمت را محافظت کن.", 13f, Ui.WARN))
+        body.addView(info, ui.lp(bottom = 12))
+
+        val urlCard = ui.card()
+        urlCard.addView(ui.text("آدرس سام (URL)", 15f, Ui.INK, true))
+        val urlField = ui.field("https://example.com/sam", prefs.samUrl, isLtr = true)
+        urlCard.addView(urlField, ui.lp(top = 8))
+        val er = ui.row()
+        val ecol = ui.column()
+        ecol.addView(ui.text("فعال باشد", 15f, Ui.INK, true))
+        ecol.addView(ui.text("خاموش = هیچ کدی فرستاده نمی‌شود", 12f, Ui.MUTED))
+        er.addView(ecol, ui.weight(1f))
+        val sw = Switch(this)
+        sw.isChecked = prefs.samEnabled
+        er.addView(sw)
+        urlCard.addView(er, ui.lp(top = 12))
+        body.addView(urlCard, ui.lp(bottom = 12))
+
+        val loading = ui.text("در حال خواندن فرستنده‌ها…", 14f, Ui.MUTED)
+        loading.gravity = Gravity.CENTER
+        body.addView(loading, ui.lp(top = 12))
+        bg {
+            val list = try { SmsReader.senders(this) } catch (e: Exception) { emptyList() }
+            onUi { fillSamSenders(body, loading, list, urlField, sw) }
+        }
+    }
+
+    private fun fillSamSenders(body: LinearLayout, loading: View, list: List<SenderInfo>, urlField: EditText, sw: Switch) {
+        body.removeView(loading)
+        val chosen = prefs.samSenders.toMutableSet()
+        val missing = prefs.samSenders.filter { a -> list.none { it.address == a } }
+        val all = list + missing.map { SenderInfo(it, 0, "", false, 0L) }
+
+        val listCard = ui.card()
+        listCard.addView(ui.text("فرستنده‌های کد را انتخاب کن", 15f, Ui.INK, true))
+        if (all.isEmpty()) {
+            listCard.addView(ui.text("پیامکی در گوشی پیدا نشد.", 13f, Ui.MUTED), ui.lp(top = 6))
+        }
+        for ((i, s) in all.withIndex()) {
+            val row = ui.row()
+            row.setPadding(0, ui.dp(10), 0, ui.dp(10))
+            val cb = CheckBox(this)
+            cb.isChecked = chosen.contains(s.address)
+            cb.buttonTintList = android.content.res.ColorStateList.valueOf(Ui.BRAND)
+            cb.setOnCheckedChangeListener { _, on -> if (on) chosen.add(s.address) else chosen.remove(s.address) }
+            row.addView(cb)
+            val col = ui.column()
+            col.addView(ui.ltr(ui.text(s.address, 15f, Ui.INK, true)))
+            val sub = (if (s.sample.isNotEmpty()) s.sample + " · " else "") + (if (s.count > 0) Text.fa(s.count) + " پیامک" else "در صندوق پیامک نیست")
+            col.addView(ui.text(sub, 12f, Ui.MUTED))
+            row.addView(col, ui.weight(1f))
+            row.setOnClickListener { cb.isChecked = !cb.isChecked }
+            listCard.addView(row)
+            if (i < all.size - 1) {
+                val line = View(this)
+                line.setBackgroundColor(Ui.LINE)
+                listCard.addView(line, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 1))
+            }
+        }
+        body.addView(listCard, ui.lp(top = 12, bottom = 14))
+
+        body.addView(ui.primary("ذخیره") {
+            prefs.samUrl = Api.normalizeSam(urlField.text.toString())
+            prefs.samSenders = chosen
+            prefs.samEnabled = sw.isChecked
+            if (prefs.samSince == 0L) prefs.samSince = System.currentTimeMillis()
+            showHome()
+        }, ui.lp())
+    }
+
     /* ================================================================== home */
 
     private fun showHome() {
@@ -457,7 +597,7 @@ class MainActivity : Activity() {
             st.addView(ui.text("آخرین ارسال: " + Text.when_(prefs.lastSyncAt), 13f, Ui.MUTED))
             st.addView(ui.text(prefs.lastMessage, 13f, if (ok) Ui.MUTED else Ui.BAD))
         }
-        st.addView(ui.text(if (prefs.autoEnabled) "ارسال خودکار بعدی: " + Text.when_(Scheduler.nextSlot(prefs.schedule)) else "ارسال خودکار خاموش است", 13f, Ui.MUTED))
+        st.addView(ui.text(if (prefs.autoEnabled) "ارسال خودکار بعدی: " + Text.when_(Scheduler.nextSlot(prefs.effectiveSchedule())) else "ارسال خودکار خاموش است", 13f, Ui.MUTED))
         val send = ui.primary("ارسال الان") { sendNow() }
         st.addView(send, ui.lp(top = 12))
         body.addView(st, ui.lp(bottom = 12))
@@ -510,7 +650,8 @@ class MainActivity : Activity() {
         val ar = ui.row()
         val acol = ui.column()
         acol.addView(ui.text("ارسال خودکار", 15f, Ui.INK, true))
-        acol.addView(ui.text("هر روز ساعت " + Text.times(prefs.schedule) + " (از تنظیمات آرمانا)", 13f, Ui.MUTED))
+        val src = if (prefs.useCustomSchedule && prefs.customSchedule.isNotEmpty()) "زمان‌های دلخواه شما" else "از تنظیمات آرمانا"
+        acol.addView(ui.text("هر روز ساعت " + Text.times(prefs.effectiveSchedule()) + " ($src)", 13f, Ui.MUTED))
         ar.addView(acol, ui.weight(1f))
         val sw = Switch(this)
         sw.isChecked = prefs.autoEnabled
@@ -521,7 +662,27 @@ class MainActivity : Activity() {
         }
         ar.addView(sw)
         ac.addView(ar)
+        ac.addView(ui.secondary("تغییر زمان‌ها") { showSchedule() }, ui.lp(top = 10))
         body.addView(ac, ui.lp(bottom = 12))
+
+        // sam (login codes)
+        val mc = ui.card()
+        val mr = ui.row()
+        val mcol = ui.column()
+        mcol.addView(ui.text("ارسال کد ورود به سام", 15f, Ui.INK, true))
+        val samState = when {
+            !prefs.samEnabled -> "خاموش"
+            prefs.samUrl.isEmpty() || prefs.samSenders.isEmpty() -> "ناقص (آدرس یا فرستنده تنظیم نشده)"
+            else -> "روشن · " + Text.fa(prefs.samSenders.size) + " فرستنده"
+        }
+        mcol.addView(ui.text(samState, 13f, if (prefs.samActive()) Ui.OK else Ui.MUTED))
+        mr.addView(mcol, ui.weight(1f))
+        val medit = ui.text("تنظیمات", 14f, Ui.BRAND, true)
+        medit.setPadding(ui.dp(8), ui.dp(4), ui.dp(8), ui.dp(4))
+        medit.setOnClickListener { askSmsThen { showSam() } }
+        mr.addView(medit)
+        mc.addView(mr)
+        body.addView(mc, ui.lp(bottom = 12))
 
         // history
         val lc = ui.card()
